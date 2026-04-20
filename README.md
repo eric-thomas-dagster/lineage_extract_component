@@ -100,6 +100,46 @@ Requires:
 
 Falls back to code location scope if the GraphQL API is unavailable.
 
+## Catalog Registration
+
+Some catalogs require (or benefit from) registering a data source before sending lineage. The component handles this per target:
+
+| Target | Pre-registration needed? | What the component does |
+|---|---|---|
+| **Alation** | **Optional.** Without `alation_datasource_id`, assets are `external` objects (no registration needed). With it, assets appear as tables under a registered Alation data source. | Set `alation_datasource_id: 5` in YAML to map assets as `5.dagster.asset_name`. Useful if you want Dagster assets to link to Snowflake/Postgres tables in Alation. |
+| **Collibra** | **No.** The import API auto-creates communities, domains, and assets. | Communities and domains are derived from `organization` + `group_name`. |
+| **DataHub** | **No, but recommended.** Platforms auto-exist on first URN. | When `datahub_register_platform: true` (default), prepends a `dataPlatformInfo` proposal that registers "dagster" with a display name so it shows up nicely in the UI. |
+| **OpenLineage** | **No.** Event-based — the `namespace` and `_producer` identify the source implicitly. | No separate registration step. |
+
+### Alation Data Source Mapping
+
+By default, Dagster assets are registered as `external` objects in Alation with keys like `api/dagster/prod/marts/mart_account_health`. This works without any pre-registration.
+
+If you want Dagster assets to appear as **tables under an existing Alation data source** (e.g. to link them to your Snowflake catalog), set `alation_datasource_id`:
+
+```yaml
+attributes:
+  catalog_target: alation
+  alation_datasource_id: 5  # ID of the registered Snowflake data source in Alation
+```
+
+This changes the key format to `5.dagster.marts/mart_account_health` (table otype) so assets appear under that data source in the Alation UI.
+
+### DataHub Platform Registration
+
+DataHub automatically creates platform entries when you ingest URNs with `urn:li:dataPlatform:dagster`. However, the platform won't have a display name or icon until you register it. With `datahub_register_platform: true` (default), the component sends a `dataPlatformInfo` aspect on every sync:
+
+```json
+{
+  "name": "dagster",
+  "displayName": "Dagster",
+  "type": "OTHERS",
+  "datasetNameDelimiter": "/"
+}
+```
+
+Set `datahub_register_platform: false` if you've already registered the platform or don't want the overhead.
+
 ## Authentication Per Target
 
 | Target | Header | Format | Notes |
