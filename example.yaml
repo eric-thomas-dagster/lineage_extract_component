@@ -1,0 +1,81 @@
+# ════════════════════════════════════════════════════════════════════
+# Example: Alation (code location scope)
+# ════════════════════════════════════════════════════════════════════
+type: your_project.components.catalog_lineage_sync.CatalogLineageSync
+
+attributes:
+  demo_mode: true
+  scope: code_location
+  catalog_target: alation
+  catalog_url: "https://alation.internal/integration/v2"
+  api_token_env: "ALATION_API_TOKEN"
+  demo_export_path: "data/exports/alation_lineage.json"
+  sensor_interval_seconds: 3600
+  sensor_name: alation_lineage_sync
+  sensor_default_status: STOPPED
+
+# ════════════════════════════════════════════════════════════════════
+# Example: Collibra (deployment-wide scope via Dagster+ GraphQL)
+# ════════════════════════════════════════════════════════════════════
+# type: your_project.components.catalog_lineage_sync.CatalogLineageSync
+#
+# attributes:
+#   demo_mode: false
+#   scope: deployment
+#   catalog_target: collibra
+#   catalog_url: "https://collibra.internal"
+#   api_token_env: "COLLIBRA_API_TOKEN"
+#   dagster_plus_token_env: "DAGSTER_PLUS_TOKEN"
+#   sensor_interval_seconds: 3600
+#   sensor_name: collibra_lineage_sync
+#   sensor_default_status: RUNNING
+
+# ════════════════════════════════════════════════════════════════════
+# Example: DataHub
+# ════════════════════════════════════════════════════════════════════
+# type: your_project.components.catalog_lineage_sync.CatalogLineageSync
+#
+# attributes:
+#   demo_mode: false
+#   scope: code_location
+#   catalog_target: datahub
+#   catalog_url: "https://datahub.internal"
+#   api_token_env: "DATAHUB_API_TOKEN"
+#   sensor_name: datahub_lineage_sync
+
+# ════════════════════════════════════════════════════════════════════
+# Example: OpenLineage (Marquez / Atlan)
+# ════════════════════════════════════════════════════════════════════
+# type: your_project.components.catalog_lineage_sync.CatalogLineageSync
+#
+# attributes:
+#   demo_mode: false
+#   scope: code_location
+#   catalog_target: openlineage
+#   catalog_url: "https://marquez.internal"
+#   api_token_env: "OPENLINEAGE_API_KEY"
+#   sensor_name: openlineage_sync
+
+# ════════════════════════════════════════════════════════════════════
+# Example: Generic webhook
+# ════════════════════════════════════════════════════════════════════
+# type: your_project.components.catalog_lineage_sync.CatalogLineageSync
+#
+# attributes:
+#   demo_mode: false
+#   scope: code_location
+#   catalog_target: webhook
+#   catalog_url: "https://hooks.slack.com/services/T00/B00/xxxx"
+#   sensor_name: lineage_webhook
+
+# ════════════════════════════════════════════════════════════════════
+# Example: File output (local, S3, ADLS)
+# ════════════════════════════════════════════════════════════════════
+# type: your_project.components.catalog_lineage_sync.CatalogLineageSync
+#
+# attributes:
+#   demo_mode: false
+#   scope: code_location
+#   catalog_target: file
+#   catalog_url: "data/exports/lineage.json"
+#   sensor_name: lineage_file_export
