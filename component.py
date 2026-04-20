@@ -119,14 +119,23 @@ def _transform_alation(payload: dict) -> dict:
     platform = ss.get("platform", "dagster")
     deployment = ss.get("deployment", "")
     ui_url = ss.get("dagster_ui_url", "")
+    ds_id = ss.get("alation_datasource_id")
     prefix = f"api/{platform}/{deployment}" if deployment else f"api/{platform}"
 
-    # Register each asset as an external dataflow object
+    # Determine otype and key format:
+    # - With alation_datasource_id: use "table" otype with keys like "5.dagster.asset_name"
+    #   (maps Dagster assets to tables under a registered Alation data source)
+    # - Without: use "external" otype with keys like "api/dagster/prod/asset_name"
+    #   (standalone external objects, no data source registration needed)
+    use_table_otype = ds_id is not None
+
+    # Register each asset as a dataflow object
     dataflow_objects = []
     for node in payload["nodes"]:
         asset_path = "/".join(node["asset_key"])
+        external_id = f"{ds_id}.dagster.{node['asset_key_string']}" if use_table_otype else f"{prefix}/{asset_path}"
         dataflow_objects.append({
-            "external_id": f"{prefix}/{asset_path}",
+            "external_id": external_id,
             "title": node["asset_key_string"],
             "description": node.get("description", ""),
             "url": f"{ui_url}/assets/{asset_path}" if ui_url else "",
@@ -143,12 +152,15 @@ def _transform_alation(payload: dict) -> dict:
         })
 
     # Build lineage paths: each edge becomes a 3-segment path
+    otype = "table" if use_table_otype else "external"
     paths = []
     for edge in payload["edges"]:
+        up_key = f"{ds_id}.dagster.{edge['upstream']}" if use_table_otype else f"{prefix}/{edge['upstream']}"
+        down_key = f"{ds_id}.dagster.{edge['downstream']}" if use_table_otype else f"{prefix}/{edge['downstream']}"
         paths.append([
-            [{"otype": "external", "key": f"{prefix}/{edge['upstream']}"}],
+            [{"otype": otype, "key": up_key}],
             [{"otype": "dataflow", "key": f"{prefix}/{edge['downstream']}"}],
-            [{"otype": "external", "key": f"{prefix}/{edge['downstream']}"}],
+            [{"otype": otype, "key": down_key}],
         ])
 
     return {"dataflow_objects": dataflow_objects, "paths": paths}
@@ -240,6 +252,28 @@ def _transform_datahub(payload: dict) -> list[dict]:
         parent_map.setdefault(edge["downstream"], []).append(edge["upstream"])
 
     proposals = []
+
+    # Optionally register the data platform with a display name
+    if ss.get("datahub_register_platform", False):
+        platform_urn = f"urn:li:dataPlatform:{platform}"
+        proposals.append({
+            "proposal": {
+                "entityUrn": platform_urn,
+                "entityType": "dataPlatform",
+                "aspectName": "dataPlatformInfo",
+                "changeType": "UPSERT",
+                "aspect": {
+                    "value": json.dumps({
+                        "name": platform,
+                        "displayName": ss.get("platform_display_name", "Dagster"),
+                        "type": "OTHERS",
+                        "datasetNameDelimiter": "/",
+                    }),
+                    "contentType": "application/json",
+                },
+            }
+        })
+
     for node in payload["nodes"]:
         key_str = node["asset_key_string"]
         urn = f"urn:li:dataset:(urn:li:dataPlatform:{platform},{key_str},{env})"
@@ -435,7 +469,13 @@ def _push_collibra(log, transformed, base_url: str, token_env: str):
 
 
 def _push_datahub(log, transformed, base_url: str, token_env: str):
-    """POST each proposal to DataHub. Auth: Bearer + X-RestLi-Protocol-Version."""
+    """POST each proposal to DataHub. Auth: Bearer + X-RestLi-Protocol-Version.
+
+    If the payload includes source_system.datahub_register_platform=True,
+    first registers the data platform with a display name so it shows up
+    nicely in the DataHub UI. Platforms auto-exist on first URN reference,
+    but registering gives them a proper name.
+    """
     import requests
     token = _get_token(token_env)
     headers = {
@@ -443,8 +483,9 @@ def _push_datahub(log, transformed, base_url: str, token_env: str):
         "Content-Type": "application/json",
         "X-RestLi-Protocol-Version": "2.0.0",
     }
+
     # DataHub ingestProposal accepts one proposal at a time
-    for i, proposal in enumerate(transformed):
+    for proposal in transformed:
         resp = requests.post(
             f"{base_url}/aspects?action=ingestProposal",
             json=proposal,
@@ -657,6 +698,17 @@ class CatalogLineageSync(dg.Component, dg.Model, dg.Resolvable):
     organization: str = ""  # e.g. "Westpac", "Maple Finance"
     code_location_name: str = ""  # auto-filled from context if empty
 
+    # Catalog-specific registration options
+    #
+    # Alation: Assets use "external" otype by default (no ds_id needed).
+    # Set alation_datasource_id to map Dagster assets as tables under a
+    # registered Alation data source (e.g. linking to Snowflake tables).
+    alation_datasource_id: Optional[int] = None  # e.g. 5 → keys become "5.schema.table"
+    #
+    # DataHub: Platforms auto-register on first ingest. Set this to true
+    # to also push a dataPlatformInfo aspect with a display name.
+    datahub_register_platform: bool = True
+
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
         import os
 
@@ -677,6 +729,9 @@ class CatalogLineageSync(dg.Component, dg.Model, dg.Resolvable):
             "dagster_ui_url": self.dagster_ui_url or os.environ.get("DAGSTER_CLOUD_URL", ""),
             "organization": self.organization,
             "code_location": self.code_location_name,
+            # Catalog-specific
+            "alation_datasource_id": self.alation_datasource_id,
+            "datahub_register_platform": self.datahub_register_platform,
         }
         default_status = (
             dg.DefaultSensorStatus.RUNNING
