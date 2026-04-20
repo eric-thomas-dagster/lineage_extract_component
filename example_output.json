@@ -1,0 +1,667 @@
+{
+  "sync_metadata": {
+    "synced_at": "2026-04-20T13:22:07Z",
+    "source": "dagster_asset_graph",
+    "total_nodes": 20,
+    "total_edges": 30,
+    "total_groups": 8,
+    "assets_with_freshness_policy": 6,
+    "catalog_target": "file",
+    "scope": "code_location"
+  },
+  "source_system": {
+    "platform": "dagster",
+    "platform_display_name": "Dagster",
+    "deployment": "prod",
+    "dagster_ui_url": "https://westpac.dagster.cloud/prod",
+    "organization": "Westpac",
+    "code_location": "westpac-modernization-demo"
+  },
+  "nodes": [
+    {
+      "asset_key": [
+        "adls_landing_files"
+      ],
+      "asset_key_string": "adls_landing_files",
+      "group": "platform_ingestion",
+      "kinds": [
+        "adls",
+        "azure"
+      ],
+      "description": "Simulate landing files arriving in ADLS Gen2. In demo_mode reads from local data/ directory. In production reads from Azure Data Lake Storage Gen2 via abfss:// protocol with managed identity.",
+      "metadata": {
+        "owner_team": "data_eng",
+        "demo_mode": "True",
+        "runtime": "python",
+        "developer_experience": "native",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only",
+        "tier": "bronze",
+        "domain": "ingestion",
+        "owner": "platform-eng@westpac.com.au",
+        "source_system": "ADLS Gen2 (demo: local filesystem)",
+        "azure_resource": "abfss://landing@westpacdatalake.dfs.core.windows.net/"
+      },
+      "freshness_policy": null,
+      "parent_count": 0,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "lineage_export_snapshot"
+      ],
+      "asset_key_string": "lineage_export_snapshot",
+      "group": "lineage_export",
+      "kinds": [
+        "lineage",
+        "python"
+      ],
+      "description": "Standalone lineage snapshot \u2014 not part of the data lineage. Materialize this asset to inspect the full graph topology (nodes, edges, freshness policies) in the metadata panel.",
+      "metadata": {
+        "export_format": "json",
+        "consumer_types": "catalog, data_quality, agentic_ai"
+      },
+      "freshness_policy": null,
+      "parent_count": 0,
+      "child_count": 0
+    },
+    {
+      "asset_key": [
+        "raw",
+        "customer_transactions"
+      ],
+      "asset_key_string": "raw/customer_transactions",
+      "group": "dbt_seeds",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "dbt seed customer_transactions\n\n#### Raw SQL:\n```sql\n\n```",
+      "metadata": {
+        "dagster-dbt/materialization_type": "seed"
+      },
+      "freshness_policy": null,
+      "parent_count": 0,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "raw",
+        "daily_balances"
+      ],
+      "asset_key_string": "raw/daily_balances",
+      "group": "dbt_seeds",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "dbt seed daily_balances\n\n#### Raw SQL:\n```sql\n\n```",
+      "metadata": {
+        "dagster-dbt/materialization_type": "seed"
+      },
+      "freshness_policy": null,
+      "parent_count": 0,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "raw",
+        "reference_accounts"
+      ],
+      "asset_key_string": "raw/reference_accounts",
+      "group": "dbt_seeds",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "dbt seed reference_accounts\n\n#### Raw SQL:\n```sql\n\n```",
+      "metadata": {
+        "dagster-dbt/materialization_type": "seed"
+      },
+      "freshness_policy": null,
+      "parent_count": 0,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "staging",
+        "stg_customer_transactions"
+      ],
+      "asset_key_string": "staging/stg_customer_transactions",
+      "group": "dbt_staging",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "Staged customer transactions with derived fields (reportable threshold, channel category)\n\n#### Raw SQL:\n```sql\n    with source as (\n        select * from {{ ref('customer_transactions') }}\n    ),\n\n    staged as (\n        select\n            transaction_id,\n            customer_id,\n            account_id,\n            transaction_type,\n            cast(amount as double) as amount,\n            currency,\n            channel,\n            branch_code,\n            cast(transaction_date as date) as tran",
+      "metadata": {
+        "dagster-dbt/materialization_type": "view"
+      },
+      "freshness_policy": null,
+      "parent_count": 1,
+      "child_count": 2
+    },
+    {
+      "asset_key": [
+        "staging",
+        "stg_daily_balances"
+      ],
+      "asset_key_string": "staging/stg_daily_balances",
+      "group": "dbt_staging",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "Staged daily balance snapshots with movement and anomaly flags\n\n#### Raw SQL:\n```sql\n    with source as (\n        select * from {{ ref('daily_balances') }}\n    ),\n\n    staged as (\n        select\n            account_id,\n            cast(balance_date as date) as balance_date,\n            cast(opening_balance as double) as opening_balance,\n            cast(closing_balance as double) as closing_balance,\n            cast(available_balance as double) as available_balance,\n            cast(hold_amount ",
+      "metadata": {
+        "dagster-dbt/materialization_type": "view"
+      },
+      "freshness_policy": null,
+      "parent_count": 1,
+      "child_count": 2
+    },
+    {
+      "asset_key": [
+        "staging",
+        "stg_reference_accounts"
+      ],
+      "asset_key_string": "staging/stg_reference_accounts",
+      "group": "dbt_staging",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "Staged reference account data with KYC gap flag\n\n#### Raw SQL:\n```sql\n    with source as (\n        select * from {{ ref('reference_accounts') }}\n    ),\n\n    staged as (\n        select\n            account_id,\n            customer_id,\n            account_type,\n            product_code,\n            branch_code,\n            cast(open_date as date) as open_date,\n            status,\n            risk_rating,\n            kyc_status,\n            segment,\n            relationship_manager,\n            case",
+      "metadata": {
+        "dagster-dbt/materialization_type": "view"
+      },
+      "freshness_policy": null,
+      "parent_count": 1,
+      "child_count": 3
+    },
+    {
+      "asset_key": [
+        "sterling_file_drop_events"
+      ],
+      "asset_key_string": "sterling_file_drop_events",
+      "group": "platform_ingestion",
+      "kinds": [
+        "python",
+        "sterling"
+      ],
+      "description": "Capture Sterling Connect:Direct file transfer completion events. In demo_mode simulates file drop timestamps. In production monitors Sterling transfer logs or event queue.",
+      "metadata": {
+        "owner_team": "data_eng",
+        "demo_mode": "True",
+        "runtime": "python",
+        "developer_experience": "native",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only",
+        "tier": "bronze",
+        "domain": "ingestion",
+        "owner": "platform-eng@westpac.com.au",
+        "legacy_system_boundary": "Sterling Connect:Direct \u2192 ADLS Gen2",
+        "integration_pattern": "file-event-trigger"
+      },
+      "freshness_policy": null,
+      "parent_count": 1,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "iacs_ingestion_status"
+      ],
+      "asset_key_string": "iacs_ingestion_status",
+      "group": "platform_ingestion",
+      "kinds": [
+        "informatica",
+        "python"
+      ],
+      "description": "Check Informatica IACS ingestion job status. In demo_mode returns mock completion status. In production polls Informatica REST API.",
+      "metadata": {
+        "owner_team": "data_eng",
+        "demo_mode": "True",
+        "runtime": "python",
+        "developer_experience": "native",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only",
+        "tier": "bronze",
+        "domain": "ingestion",
+        "owner": "platform-eng@westpac.com.au",
+        "legacy_system_boundary": "Informatica IACS \u2192 Snowflake raw zone",
+        "integration_pattern": "poll-and-proceed"
+      },
+      "freshness_policy": null,
+      "parent_count": 1,
+      "child_count": 3
+    },
+    {
+      "asset_key": [
+        "intermediate",
+        "int_account_activity"
+      ],
+      "asset_key_string": "intermediate/int_account_activity",
+      "group": "dbt_intermediate",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "Aggregated account activity metrics joined with account reference data\n\n#### Raw SQL:\n```sql\n    with transactions as (\n        select * from {{ ref('stg_customer_transactions') }}\n    ),\n\n    accounts as (\n        select * from {{ ref('stg_reference_accounts') }}\n    ),\n\n    activity as (\n        select\n            a.account_id,\n            a.customer_id,\n            a.account_type,\n            a.product_code,\n            a.segment,\n            a.risk_rating,\n            a.has_kyc_gap,\n        ",
+      "metadata": {
+        "dagster-dbt/materialization_type": "table"
+      },
+      "freshness_policy": null,
+      "parent_count": 2,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "intermediate",
+        "int_balance_anomalies"
+      ],
+      "asset_key_string": "intermediate/int_balance_anomalies",
+      "group": "dbt_intermediate",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "Detected balance anomalies: negative balances, high-value movements, excessive holds\n\n#### Raw SQL:\n```sql\n    with balances as (\n        select\n            account_id,\n            balance_date,\n            cast(opening_balance as double) as opening_balance,\n            cast(closing_balance as double) as closing_balance,\n            cast(daily_movement as double) as daily_movement,\n            is_large_movement,\n            cast(hold_amount as double) as hold_amount\n        from {{ ref('stg_dail",
+      "metadata": {
+        "dagster-dbt/materialization_type": "table"
+      },
+      "freshness_policy": null,
+      "parent_count": 2,
+      "child_count": 2
+    },
+    {
+      "asset_key": [
+        "marts",
+        "mart_account_health"
+      ],
+      "asset_key_string": "marts/mart_account_health",
+      "group": "dbt_marts",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "Comprehensive account health view combining activity, balances, anomalies, and KYC status\n\n#### Raw SQL:\n```sql\n    with activity as (\n        select\n            account_id,\n            customer_id,\n            account_type,\n            product_code,\n            segment,\n            risk_rating,\n            has_kyc_gap,\n            total_transactions,\n            cast(total_debits as double) as total_debits,\n            cast(total_credits as double) as total_credits,\n            failed_transacti",
+      "metadata": {
+        "dagster-dbt/materialization_type": "table"
+      },
+      "freshness_policy": "TimeWindowFreshnessPolicy(fail_window=SerializableTimeDelta(days=0, seconds=21600, microseconds=0), warn_window=SerializableTimeDelta(days=0, seconds=10800, microseconds=0))",
+      "parent_count": 3,
+      "child_count": 5
+    },
+    {
+      "asset_key": [
+        "marts",
+        "mart_operational_exceptions"
+      ],
+      "asset_key_string": "marts/mart_operational_exceptions",
+      "group": "dbt_marts",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "All operational exceptions: failed transactions, KYC gaps, balance anomalies\n\n#### Raw SQL:\n```sql\n    with failed_transactions as (\n        select\n            transaction_id,\n            customer_id,\n            account_id,\n            cast(amount as double) as amount,\n            channel,\n            channel_category,\n            transaction_date,\n            source_system,\n            'FAILED_TRANSACTION' as exception_type,\n            'HIGH' as severity\n        from {{ ref('stg_customer_tran",
+      "metadata": {
+        "dagster-dbt/materialization_type": "table"
+      },
+      "freshness_policy": "TimeWindowFreshnessPolicy(fail_window=SerializableTimeDelta(days=0, seconds=14400, microseconds=0), warn_window=SerializableTimeDelta(days=0, seconds=7200, microseconds=0))",
+      "parent_count": 3,
+      "child_count": 5
+    },
+    {
+      "asset_key": [
+        "controlm_eod_settlement"
+      ],
+      "asset_key_string": "controlm_eod_settlement",
+      "group": "legacy_integration",
+      "kinds": [
+        "control-m",
+        "python"
+      ],
+      "description": "End-of-day batch settlement job managed by Control-M. Dagster submits, polls through SUBMITTED \u2192 RUNNING \u2192 ENDED_OK, then sends feedback so the Control-M parent chain can proceed.",
+      "metadata": {
+        "tier": "orchestration",
+        "domain": "legacy_integration",
+        "owner_team": "data_eng",
+        "owner": "platform-eng@westpac.com.au",
+        "integration_pattern": "dagster-orchestrates-controlm",
+        "scheduler_owner": "Control-M",
+        "controlm_job_name": "WESTPAC_EOD_BATCH_SETTLEMENT",
+        "controlm_folder": "WESTPAC_DAILY",
+        "controlm_application": "CORE_BANKING",
+        "controlm_host": "ctm-agent-prod-01",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only"
+      },
+      "freshness_policy": "CronFreshnessPolicy(deadline_cron='0 8 * * *', serializable_lower_bound_delta=SerializableTimeDelta(days=0, seconds=3600, microseconds=0), timezone='Australia/Sydney')",
+      "parent_count": 3,
+      "child_count": 0
+    },
+    {
+      "asset_key": [
+        "controlm_regulatory_extract"
+      ],
+      "asset_key_string": "controlm_regulatory_extract",
+      "group": "legacy_integration",
+      "kinds": [
+        "control-m",
+        "python"
+      ],
+      "description": "APRA regulatory reporting extract. Must complete before compliance dashboards refresh. Control-M manages the Teradata query; Dagster orchestrates the pipeline around it.",
+      "metadata": {
+        "tier": "orchestration",
+        "domain": "legacy_integration",
+        "owner_team": "data_eng",
+        "owner": "platform-eng@westpac.com.au",
+        "integration_pattern": "dagster-orchestrates-controlm",
+        "scheduler_owner": "Control-M",
+        "controlm_job_name": "WESTPAC_REGULATORY_EXTRACT",
+        "controlm_folder": "WESTPAC_DAILY",
+        "controlm_application": "COMPLIANCE",
+        "controlm_host": "ctm-agent-prod-02",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only"
+      },
+      "freshness_policy": "CronFreshnessPolicy(deadline_cron='0 9 * * *', serializable_lower_bound_delta=SerializableTimeDelta(days=0, seconds=3600, microseconds=0), timezone='Australia/Sydney')",
+      "parent_count": 3,
+      "child_count": 0
+    },
+    {
+      "asset_key": [
+        "controlm_teradata_sync"
+      ],
+      "asset_key_string": "controlm_teradata_sync",
+      "group": "legacy_integration",
+      "kinds": [
+        "control-m",
+        "python"
+      ],
+      "description": "Legacy Teradata-to-Snowflake sync job. One of the last workloads that will be migrated off Control-M. Until then, Dagster orchestrates around it as an external dependency.",
+      "metadata": {
+        "tier": "orchestration",
+        "domain": "legacy_integration",
+        "owner_team": "data_eng",
+        "owner": "platform-eng@westpac.com.au",
+        "integration_pattern": "dagster-orchestrates-controlm",
+        "scheduler_owner": "Control-M",
+        "controlm_job_name": "WESTPAC_TERADATA_LEGACY_SYNC",
+        "controlm_folder": "WESTPAC_NIGHTLY",
+        "controlm_application": "DATA_WAREHOUSE",
+        "controlm_host": "ctm-agent-legacy-01",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only"
+      },
+      "freshness_policy": null,
+      "parent_count": 3,
+      "child_count": 0
+    },
+    {
+      "asset_key": [
+        "marts",
+        "mart_data_product_readiness"
+      ],
+      "asset_key_string": "marts/mart_data_product_readiness",
+      "group": "dbt_marts",
+      "kinds": [
+        "dbt",
+        "duckdb"
+      ],
+      "description": "Per-account readiness for downstream data products, APIs, and ML feature store\n\n#### Raw SQL:\n```sql\n    with account_health as (\n        select * from {{ ref('mart_account_health') }}\n    ),\n\n    exceptions as (\n        select\n            account_id,\n            count(*) as exception_count,\n            count(case when severity = 'HIGH' then 1 end) as high_exceptions\n        from {{ ref('mart_operational_exceptions') }}\n        group by account_id\n    ),\n\n    readiness as (\n        select\n      ",
+      "metadata": {
+        "dagster-dbt/materialization_type": "table"
+      },
+      "freshness_policy": "TimeWindowFreshnessPolicy(fail_window=SerializableTimeDelta(days=0, seconds=43200, microseconds=0), warn_window=SerializableTimeDelta(days=0, seconds=21600, microseconds=0))",
+      "parent_count": 2,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "feature_store_candidates"
+      ],
+      "asset_key_string": "feature_store_candidates",
+      "group": "ml_future",
+      "kinds": [
+        "ml",
+        "python"
+      ],
+      "description": "Identify accounts eligible for the ML feature store using data product readiness scores. Foundation for ML-driven risk models, churn prediction, and personalization.",
+      "metadata": {
+        "owner_team": "ml_eng",
+        "demo_mode": "True",
+        "runtime": "python",
+        "developer_experience": "native",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only",
+        "tier": "gold",
+        "domain": "ml_platform",
+        "owner": "ml-eng@westpac.com.au",
+        "language_support": "python, sql"
+      },
+      "freshness_policy": null,
+      "parent_count": 1,
+      "child_count": 1
+    },
+    {
+      "asset_key": [
+        "risk_signal_features"
+      ],
+      "asset_key_string": "risk_signal_features",
+      "group": "ml_future",
+      "kinds": [
+        "ml",
+        "python"
+      ],
+      "description": "Compute risk signal features from account health and operational exceptions. These feed real-time risk scoring and fraud detection. Requires full Python runtime (scipy, sklearn preprocessing).",
+      "metadata": {
+        "owner_team": "ml_eng",
+        "demo_mode": "True",
+        "runtime": "python",
+        "developer_experience": "native",
+        "deployment_mode": "hybrid",
+        "data_residency": "customer_compute_boundary",
+        "control_plane_egress": "metadata_only",
+        "tier": "gold",
+        "domain": "ml_platform",
+        "owner": "ml-eng@westpac.com.au",
+        "language_support": "python, sql"
+      },
+      "freshness_policy": "TimeWindowFreshnessPolicy(fail_window=SerializableTimeDelta(days=0, seconds=21600, microseconds=0), warn_window=SerializableTimeDelta(days=0, seconds=10800, microseconds=0))",
+      "parent_count": 3,
+      "child_count": 0
+    }
+  ],
+  "edges": [
+    {
+      "upstream": "raw/customer_transactions",
+      "downstream": "staging/stg_customer_transactions"
+    },
+    {
+      "upstream": "raw/daily_balances",
+      "downstream": "staging/stg_daily_balances"
+    },
+    {
+      "upstream": "raw/reference_accounts",
+      "downstream": "staging/stg_reference_accounts"
+    },
+    {
+      "upstream": "adls_landing_files",
+      "downstream": "sterling_file_drop_events"
+    },
+    {
+      "upstream": "sterling_file_drop_events",
+      "downstream": "iacs_ingestion_status"
+    },
+    {
+      "upstream": "staging/stg_customer_transactions",
+      "downstream": "intermediate/int_account_activity"
+    },
+    {
+      "upstream": "staging/stg_reference_accounts",
+      "downstream": "intermediate/int_account_activity"
+    },
+    {
+      "upstream": "staging/stg_daily_balances",
+      "downstream": "intermediate/int_balance_anomalies"
+    },
+    {
+      "upstream": "staging/stg_reference_accounts",
+      "downstream": "intermediate/int_balance_anomalies"
+    },
+    {
+      "upstream": "intermediate/int_account_activity",
+      "downstream": "marts/mart_account_health"
+    },
+    {
+      "upstream": "intermediate/int_balance_anomalies",
+      "downstream": "marts/mart_account_health"
+    },
+    {
+      "upstream": "staging/stg_daily_balances",
+      "downstream": "marts/mart_account_health"
+    },
+    {
+      "upstream": "staging/stg_customer_transactions",
+      "downstream": "marts/mart_operational_exceptions"
+    },
+    {
+      "upstream": "intermediate/int_balance_anomalies",
+      "downstream": "marts/mart_operational_exceptions"
+    },
+    {
+      "upstream": "staging/stg_reference_accounts",
+      "downstream": "marts/mart_operational_exceptions"
+    },
+    {
+      "upstream": "iacs_ingestion_status",
+      "downstream": "controlm_eod_settlement"
+    },
+    {
+      "upstream": "marts/mart_account_health",
+      "downstream": "controlm_eod_settlement"
+    },
+    {
+      "upstream": "marts/mart_operational_exceptions",
+      "downstream": "controlm_eod_settlement"
+    },
+    {
+      "upstream": "iacs_ingestion_status",
+      "downstream": "controlm_regulatory_extract"
+    },
+    {
+      "upstream": "marts/mart_account_health",
+      "downstream": "controlm_regulatory_extract"
+    },
+    {
+      "upstream": "marts/mart_operational_exceptions",
+      "downstream": "controlm_regulatory_extract"
+    },
+    {
+      "upstream": "iacs_ingestion_status",
+      "downstream": "controlm_teradata_sync"
+    },
+    {
+      "upstream": "marts/mart_account_health",
+      "downstream": "controlm_teradata_sync"
+    },
+    {
+      "upstream": "marts/mart_operational_exceptions",
+      "downstream": "controlm_teradata_sync"
+    },
+    {
+      "upstream": "marts/mart_account_health",
+      "downstream": "marts/mart_data_product_readiness"
+    },
+    {
+      "upstream": "marts/mart_operational_exceptions",
+      "downstream": "marts/mart_data_product_readiness"
+    },
+    {
+      "upstream": "marts/mart_data_product_readiness",
+      "downstream": "feature_store_candidates"
+    },
+    {
+      "upstream": "feature_store_candidates",
+      "downstream": "risk_signal_features"
+    },
+    {
+      "upstream": "marts/mart_account_health",
+      "downstream": "risk_signal_features"
+    },
+    {
+      "upstream": "marts/mart_operational_exceptions",
+      "downstream": "risk_signal_features"
+    }
+  ],
+  "group_summary": {
+    "dbt_intermediate": {
+      "count": 2,
+      "assets": [
+        "intermediate/int_account_activity",
+        "intermediate/int_balance_anomalies"
+      ]
+    },
+    "dbt_marts": {
+      "count": 3,
+      "assets": [
+        "marts/mart_account_health",
+        "marts/mart_operational_exceptions",
+        "marts/mart_data_product_readiness"
+      ]
+    },
+    "dbt_seeds": {
+      "count": 3,
+      "assets": [
+        "raw/customer_transactions",
+        "raw/daily_balances",
+        "raw/reference_accounts"
+      ]
+    },
+    "dbt_staging": {
+      "count": 3,
+      "assets": [
+        "staging/stg_customer_transactions",
+        "staging/stg_daily_balances",
+        "staging/stg_reference_accounts"
+      ]
+    },
+    "legacy_integration": {
+      "count": 3,
+      "assets": [
+        "controlm_eod_settlement",
+        "controlm_regulatory_extract",
+        "controlm_teradata_sync"
+      ]
+    },
+    "lineage_export": {
+      "count": 1,
+      "assets": [
+        "lineage_export_snapshot"
+      ]
+    },
+    "ml_future": {
+      "count": 2,
+      "assets": [
+        "feature_store_candidates",
+        "risk_signal_features"
+      ]
+    },
+    "platform_ingestion": {
+      "count": 3,
+      "assets": [
+        "adls_landing_files",
+        "sterling_file_drop_events",
+        "iacs_ingestion_status"
+      ]
+    }
+  }
+}
