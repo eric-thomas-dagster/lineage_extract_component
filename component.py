@@ -113,20 +113,28 @@ def _transform_alation(payload: dict) -> dict:
     path is a list of segments. Each segment contains objects typed by
     "otype" (table, dataflow, external, etc.) with a unique "key".
 
-    Dataflow objects represent processes (ETL jobs, dbt models, etc.)
-    that connect source → target. They must be registered via
-    "dataflow_objects" before being referenced in paths.
-
     Ref: https://developer.alation.com/dev/docs/lineage-overview
     """
+    ss = payload.get("source_system", {})
+    platform = ss.get("platform", "dagster")
+    deployment = ss.get("deployment", "")
+    ui_url = ss.get("dagster_ui_url", "")
+    prefix = f"api/{platform}/{deployment}" if deployment else f"api/{platform}"
+
     # Register each asset as an external dataflow object
     dataflow_objects = []
     for node in payload["nodes"]:
+        asset_path = "/".join(node["asset_key"])
         dataflow_objects.append({
-            "external_id": f"api/dagster/{'/'.join(node['asset_key'])}",
+            "external_id": f"{prefix}/{asset_path}",
             "title": node["asset_key_string"],
             "description": node.get("description", ""),
+            "url": f"{ui_url}/assets/{asset_path}" if ui_url else "",
             "content": json.dumps({
+                "source_platform": platform,
+                "deployment": deployment,
+                "organization": ss.get("organization", ""),
+                "code_location": node.get("code_location", ss.get("code_location", "")),
                 "group": node["group"],
                 "kinds": node["kinds"],
                 "metadata": node["metadata"],
@@ -135,19 +143,18 @@ def _transform_alation(payload: dict) -> dict:
         })
 
     # Build lineage paths: each edge becomes a 3-segment path
-    # [source_object] → [dataflow_object] → [target_object]
     paths = []
     for edge in payload["edges"]:
         paths.append([
-            [{"otype": "external", "key": f"api/dagster/{edge['upstream']}"}],
-            [{"otype": "dataflow", "key": f"api/dagster/{edge['downstream']}"}],
-            [{"otype": "external", "key": f"api/dagster/{edge['downstream']}"}],
+            [{"otype": "external", "key": f"{prefix}/{edge['upstream']}"}],
+            [{"otype": "dataflow", "key": f"{prefix}/{edge['downstream']}"}],
+            [{"otype": "external", "key": f"{prefix}/{edge['downstream']}"}],
         ])
 
     return {"dataflow_objects": dataflow_objects, "paths": paths}
 
 
-def _transform_collibra(payload: dict) -> list[dict]:
+def _transform_collibra(payload: dict) -> dict:
     """Transform to Collibra Import API format.
 
     Endpoint: POST /rest/2.0/import/json-job
@@ -155,20 +162,27 @@ def _transform_collibra(payload: dict) -> list[dict]:
 
     Collibra's import API accepts assets and relations in a single
     payload. Assets are identified by name + domain. Relations connect
-    assets via typed relationships.
-
-    For lineage without pre-existing Collibra asset UUIDs, we use the
-    import API which can create-or-match assets by name.
+    assets via typed relationships. The community/domain hierarchy
+    identifies the source system.
     """
+    ss = payload.get("source_system", {})
+    org = ss.get("organization", "") or ss.get("platform_display_name", "Dagster")
+    deployment = ss.get("deployment", "")
+    community_name = f"{org} Data Platform" if org else "Data Platform"
+
     # Build asset entries
     assets = []
     for node in payload["nodes"]:
+        domain_name = node.get("group") or "Default"
+        if deployment:
+            domain_name = f"{domain_name} ({deployment})"
+
         assets.append({
             "identifier": {
                 "name": node["asset_key_string"],
                 "domain": {
-                    "name": node.get("group") or "Dagster",
-                    "community": {"name": "Data Platform"},
+                    "name": domain_name,
+                    "community": {"name": community_name},
                 },
             },
             "resourceType": "Asset",
@@ -176,8 +190,13 @@ def _transform_collibra(payload: dict) -> list[dict]:
             "displayName": node["asset_key_string"],
             "attributes": {
                 "Description": [{"value": node.get("description", "")}],
+                "Source Platform": [{"value": ss.get("platform_display_name", "Dagster")}],
+                "Deployment": [{"value": deployment}],
+                "Code Location": [{"value": node.get("code_location", ss.get("code_location", ""))}],
                 "Dagster Group": [{"value": node.get("group", "")}],
                 "Dagster Kinds": [{"value": ",".join(node.get("kinds", []))}],
+                **({"Dagster UI URL": [{"value": f"{ss.get('dagster_ui_url', '')}/assets/{'/'.join(node['asset_key'])}"}]}
+                   if ss.get("dagster_ui_url") else {}),
                 **({"Freshness Policy": [{"value": node["freshness_policy"]}]}
                    if node.get("freshness_policy") else {}),
             },
@@ -208,12 +227,14 @@ def _transform_datahub(payload: dict) -> list[dict]:
     Auth: Authorization: Bearer <personal_access_token>
     Required header: X-RestLi-Protocol-Version: 2.0.0
 
-    Each proposal wraps an aspect value as a JSON string inside a
-    "proposal" object with entityUrn, entityType, aspectName,
-    changeType, and the aspect content.
-
     Ref: https://docs.datahub.com/docs/api/restli/restli-overview
     """
+    ss = payload.get("source_system", {})
+    platform = ss.get("platform", "dagster")
+    deployment = ss.get("deployment", "")
+    env = "PROD" if deployment in ("prod", "production", "") else "DEV"
+    ui_url = ss.get("dagster_ui_url", "")
+
     parent_map: dict[str, list[str]] = {}
     for edge in payload["edges"]:
         parent_map.setdefault(edge["downstream"], []).append(edge["upstream"])
@@ -221,19 +242,23 @@ def _transform_datahub(payload: dict) -> list[dict]:
     proposals = []
     for node in payload["nodes"]:
         key_str = node["asset_key_string"]
-        urn = f"urn:li:dataset:(urn:li:dataPlatform:dagster,{key_str},PROD)"
+        urn = f"urn:li:dataset:(urn:li:dataPlatform:{platform},{key_str},{env})"
 
         # Dataset properties aspect
+        custom_props = {
+            "dagster_group": node["group"] or "",
+            "dagster_kinds": ",".join(node["kinds"]),
+            "dagster_deployment": deployment,
+            "dagster_code_location": node.get("code_location", ss.get("code_location", "")),
+            **({"dagster_ui_url": f"{ui_url}/assets/{'/'.join(node['asset_key'])}"} if ui_url else {}),
+            **({"dagster_freshness_policy": node["freshness_policy"]} if node["freshness_policy"] else {}),
+            **{k: str(v) for k, v in node.get("metadata", {}).items()},
+        }
         properties_aspect = {
             "name": key_str,
             "description": node.get("description", ""),
-            "customProperties": {
-                "dagster_group": node["group"] or "",
-                "dagster_kinds": ",".join(node["kinds"]),
-                **({"freshness_policy": node["freshness_policy"]}
-                   if node["freshness_policy"] else {}),
-                **{k: str(v) for k, v in node.get("metadata", {}).items()},
-            },
+            "externalUrl": f"{ui_url}/assets/{'/'.join(node['asset_key'])}" if ui_url else "",
+            "customProperties": custom_props,
         }
         proposals.append({
             "proposal": {
@@ -254,7 +279,7 @@ def _transform_datahub(payload: dict) -> list[dict]:
             lineage_aspect = {
                 "upstreams": [
                     {
-                        "dataset": f"urn:li:dataset:(urn:li:dataPlatform:dagster,{p},PROD)",
+                        "dataset": f"urn:li:dataset:(urn:li:dataPlatform:{platform},{p},{env})",
                         "type": "TRANSFORMED",
                     }
                     for p in parents
@@ -283,20 +308,24 @@ def _transform_openlineage(payload: dict) -> dict:
     Auth: Authorization: Bearer <token> (optional, depends on backend)
 
     OpenLineage requires _producer and _schemaURL on the event.
-    Each dataset is an InputDataset with namespace + name.
-    Lineage is implicit from the job's inputs/outputs.
-    runId must be a UUID.
+    The namespace identifies the source system (dagster deployment).
 
     Ref: https://openlineage.io/docs/spec/object-model
     """
     import uuid
+
+    ss = payload.get("source_system", {})
+    producer = ss.get("dagster_ui_url") or "https://github.com/dagster-io/dagster"
+    namespace = f"dagster://{ss.get('deployment', 'local')}"
+    if ss.get("organization"):
+        namespace = f"dagster://{ss['organization']}/{ss.get('deployment', 'local')}"
 
     # Build input datasets from all assets
     input_datasets = []
     for node in payload["nodes"]:
         facets = {
             "dagster_metadata": {
-                "_producer": "https://github.com/dagster-io/dagster",
+                "_producer": producer,
                 "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/DagsterMetadataFacet.json",
                 "group": node["group"],
                 "kinds": node["kinds"],
@@ -306,7 +335,7 @@ def _transform_openlineage(payload: dict) -> dict:
         # Add schema facet if metadata has fields
         if node.get("metadata"):
             facets["schema"] = {
-                "_producer": "https://github.com/dagster-io/dagster",
+                "_producer": producer,
                 "_schemaURL": "https://openlineage.io/spec/facets/1-0-1/SchemaDatasetFacet.json",
                 "fields": [
                     {"name": k, "type": str(type(v).__name__)}
@@ -315,19 +344,19 @@ def _transform_openlineage(payload: dict) -> dict:
             }
 
         input_datasets.append({
-            "namespace": "dagster",
+            "namespace": namespace,
             "name": node["asset_key_string"],
             "facets": facets,
             "inputFacets": {},
         })
 
     return {
-        "_producer": "https://github.com/dagster-io/dagster",
+        "_producer": producer,
         "_schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
         "eventType": "COMPLETE",
         "eventTime": payload["sync_metadata"]["synced_at"],
         "job": {
-            "namespace": "dagster",
+            "namespace": namespace,
             "name": "dagster_lineage_sync",
             "facets": {},
         },
@@ -337,7 +366,7 @@ def _transform_openlineage(payload: dict) -> dict:
             "runId": str(uuid.uuid4()),
             "facets": {
                 "dagster_lineage": {
-                    "_producer": "https://github.com/dagster-io/dagster",
+                    "_producer": producer,
                     "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/DagsterLineageFacet.json",
                     "edges": payload["edges"],
                     "total_nodes": payload["sync_metadata"]["total_nodes"],
@@ -620,7 +649,17 @@ class CatalogLineageSync(dg.Component, dg.Model, dg.Resolvable):
     sensor_name: str = "catalog_lineage_sync"
     sensor_default_status: str = "STOPPED"
 
+    # Source system identification — tells the catalog WHO is sending this lineage
+    platform_name: str = "dagster"  # registered platform name in the catalog
+    platform_display_name: str = "Dagster"
+    deployment_name: str = ""  # e.g. "prod", "staging" — auto-filled from DAGSTER_CLOUD_DEPLOYMENT_NAME if empty
+    dagster_ui_url: str = ""  # e.g. "https://myorg.dagster.cloud/prod" — for drill-down links
+    organization: str = ""  # e.g. "Westpac", "Maple Finance"
+    code_location_name: str = ""  # auto-filled from context if empty
+
     def build_defs(self, context: dg.ComponentLoadContext) -> dg.Definitions:
+        import os
+
         demo_mode = self.demo_mode
         scope = self.scope
         catalog_target = self.catalog_target
@@ -629,6 +668,16 @@ class CatalogLineageSync(dg.Component, dg.Model, dg.Resolvable):
         dagster_plus_token_env = self.dagster_plus_token_env
         export_path = self.demo_export_path
         sensor_name = self.sensor_name
+
+        # Build source system identity (auto-fill from env where possible)
+        source_system = {
+            "platform": self.platform_name,
+            "platform_display_name": self.platform_display_name,
+            "deployment": self.deployment_name or os.environ.get("DAGSTER_CLOUD_DEPLOYMENT_NAME", "local"),
+            "dagster_ui_url": self.dagster_ui_url or os.environ.get("DAGSTER_CLOUD_URL", ""),
+            "organization": self.organization,
+            "code_location": self.code_location_name,
+        }
         default_status = (
             dg.DefaultSensorStatus.RUNNING
             if self.sensor_default_status == "RUNNING"
@@ -674,6 +723,14 @@ class CatalogLineageSync(dg.Component, dg.Model, dg.Resolvable):
             payload["sync_metadata"]["catalog_target"] = catalog_target
             payload["sync_metadata"]["scope"] = scope
 
+            # Enrich with source system identity
+            _ss = dict(source_system)
+            if not _ss["code_location"]:
+                _ss["code_location"] = context.repository_name
+            if _ss["dagster_ui_url"] and _ss["deployment"]:
+                _ss["dagster_ui_url"] = f"{_ss['dagster_ui_url']}/{_ss['deployment']}"
+            payload["source_system"] = _ss
+
             current_hash = _hash_payload(payload)
             previous_hash = context.cursor
 
@@ -691,6 +748,7 @@ class CatalogLineageSync(dg.Component, dg.Model, dg.Resolvable):
             )
 
             # Transform the internal payload to the target's expected format
+            # All transformers receive the full payload which now includes source_system
             transformed = transform_fn(payload)
 
             if demo_mode:
