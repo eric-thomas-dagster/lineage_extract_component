@@ -8,22 +8,21 @@ The component adds a **sensor** that:
 
 1. Introspects the live Dagster asset graph at runtime (`context.repository_def.asset_graph`)
 2. Builds a lineage payload (nodes, edges, metadata, freshness policies)
-3. Transforms it to the target catalog's expected API format
-4. Hashes the graph structure — **only pushes when lineage has actually changed**
-5. POSTs to the catalog API (or writes to a local file in demo mode)
+3. Enriches with source system identity (platform, org, deployment, UI links)
+4. Transforms to the target catalog's expected API format and auth
+5. Hashes the graph structure — **only pushes when lineage has actually changed**
+6. POSTs to the catalog API (or writes to a local file in demo mode)
 
 ## Supported Targets
 
-| Target | API Format | Reference |
-|---|---|---|
-| `alation` | `{ "dataflow_objects": [...], "paths": [...] }` | [Alation Bulk Lineage API](https://developer.alation.com/dev/reference/postbulklineage) |
-| `collibra` | `[{ "source": {...}, "target": {...}, "relationType": {...} }]` | [Collibra I/O Relations API](https://developer.collibra.com/rest/2.0/input-output-relations) |
-| `datahub` | MCE proposals with `datasetProperties` + `upstreamLineage` aspects | [DataHub Lineage API](https://datahubproject.io/docs/api/tutorials/lineage) |
-| `openlineage` | `RunEvent` with job facets and I/O datasets | [OpenLineage Spec](https://openlineage.io/docs/spec/run-event) |
-| `webhook` | Raw internal format (passthrough) | Any HTTP endpoint |
-| `file` | Raw JSON to local path | Local filesystem |
-
-Each target has a dedicated payload transformer that converts the internal graph format to the catalog's expected structure.
+| Target | Endpoint | Auth | Payload Format |
+|---|---|---|---|
+| `alation` | `POST /integration/v2/lineage/` | `TOKEN` header | `{ "dataflow_objects": [...], "paths": [...] }` with 3-segment lineage chains |
+| `collibra` | `POST /rest/2.0/import/json-job` | `Authorization: Bearer` | `{ "assets": [...], "relations": [...] }` with community/domain hierarchy |
+| `datahub` | `POST /aspects?action=ingestProposal` | `Authorization: Bearer` + `X-RestLi-Protocol-Version: 2.0.0` | Per-aspect proposals with `changeType: UPSERT`, aspect value as JSON string |
+| `openlineage` | `POST /api/v1/lineage` | `Authorization: Bearer` (optional) | `RunEvent` with `_producer`, `_schemaURL`, UUID `runId`, versioned facets |
+| `webhook` | `POST {catalog_url}` | `Authorization: Bearer` (optional) | Raw internal format (passthrough) |
+| `file` | N/A | N/A | Raw JSON to local path |
 
 ## Quick Start
 
@@ -36,14 +35,17 @@ type: my_project.components.catalog_lineage_sync.CatalogLineageSync
 attributes:
   demo_mode: true
   catalog_target: alation
-  catalog_url: "https://alation.internal/integration/v2"
+  catalog_url: "https://alation.internal"
   api_token_env: "ALATION_API_TOKEN"
+  organization: "My Company"
 ```
 
 3. Run `dg check defs` — a sensor named `catalog_lineage_sync` will appear
 4. Enable the sensor in the Dagster UI — lineage syncs automatically
 
 ## Configuration
+
+### Core Settings
 
 | Field | Default | Description |
 |---|---|---|
@@ -58,6 +60,28 @@ attributes:
 | `sensor_name` | `catalog_lineage_sync` | Name of the sensor in Dagster UI |
 | `sensor_default_status` | `STOPPED` | `STOPPED` or `RUNNING` — whether sensor starts enabled |
 
+### Source System Identification
+
+These fields tell the catalog **who is sending** the lineage. Catalogs use this to register the data source, create drill-down links, and distinguish lineage from multiple platforms.
+
+| Field | Default | Auto-filled from | Description |
+|---|---|---|---|
+| `platform_name` | `dagster` | — | Platform identifier registered in the catalog |
+| `platform_display_name` | `Dagster` | — | Human-readable platform name |
+| `organization` | `""` | — | Your company/org name (e.g. `"Westpac"`) |
+| `deployment_name` | `""` | `DAGSTER_CLOUD_DEPLOYMENT_NAME` | Deployment name (e.g. `"prod"`, `"staging"`) |
+| `dagster_ui_url` | `""` | `DAGSTER_CLOUD_URL` | Base URL of the Dagster UI for drill-down links |
+| `code_location_name` | `""` | `context.repository_name` | Code location name |
+
+How each target uses the source system identity:
+
+| Target | Registration | Drill-down links |
+|---|---|---|
+| **Alation** | `external_id: api/dagster/prod/...`, `content` JSON includes org/deployment/code_location | `url` field links to `{dagster_ui_url}/assets/{key}` |
+| **Collibra** | `community: "{org} Data Platform"`, `domain: "{group} ({deployment})"` | `Dagster UI URL` attribute per asset |
+| **DataHub** | URN: `urn:li:dataset:(urn:li:dataPlatform:{platform},{key},{env})` | `externalUrl` links to Dagster UI, `customProperties` include deployment + code location |
+| **OpenLineage** | `_producer: "{dagster_ui_url}"`, `namespace: "dagster://{org}/{deployment}"` | Producer URL identifies the exact deployment |
+
 ## Scope: Code Location vs Deployment
 
 ### `scope: code_location` (default)
@@ -66,13 +90,25 @@ Uses `context.repository_def.asset_graph` — fast, no external calls, but only 
 
 ### `scope: deployment`
 
-Queries the Dagster+ GraphQL API for the full asset graph across **all code locations** in the deployment. Requires:
+Queries the Dagster+ GraphQL API for the full asset graph across **all code locations** in the deployment. The GraphQL URL is auto-derived from `DAGSTER_CLOUD_URL` + `DAGSTER_CLOUD_DEPLOYMENT_NAME`.
+
+Requires:
 - Dagster+ (Serverless or Hybrid)
 - `DAGSTER_CLOUD_URL` — auto-set by Dagster+
 - `DAGSTER_CLOUD_DEPLOYMENT_NAME` — auto-set by Dagster+
-- `DAGSTER_PLUS_TOKEN` — a user token you create in the Dagster+ UI (must be set as an env var)
+- A user token set via the `dagster_plus_token_env` env var — **not** auto-injected into user code by Dagster+; you must create a user token in the Dagster+ UI and set it as an environment variable
 
 Falls back to code location scope if the GraphQL API is unavailable.
+
+## Authentication Per Target
+
+| Target | Header | Format | Notes |
+|---|---|---|---|
+| **Alation** | `TOKEN` | Raw token value | Not `Authorization: Bearer` — Alation uses a custom header |
+| **Collibra** | `Authorization` | `Bearer {token}` | Standard OAuth2 bearer |
+| **DataHub** | `Authorization` + `X-RestLi-Protocol-Version` | `Bearer {token}` + `2.0.0` | DataHub requires the Rest.li protocol version header |
+| **OpenLineage** | `Authorization` | `Bearer {token}` | Optional — some backends (Marquez) don't require auth |
+| **Webhook** | `Authorization` | `Bearer {token}` | Only if `api_token_env` is set |
 
 ## Change Detection
 
@@ -81,6 +117,12 @@ The sensor hashes the graph structure (nodes + edges) on every tick. If the hash
 - A `StateBackedComponent` refreshes (e.g. dbt manifest recompile)
 
 This means the sensor is safe to run frequently (e.g. every 5 minutes) without spamming the catalog API.
+
+## Error Handling
+
+- **Missing token**: raises `RuntimeError` → sensor tick fails → visible in Dagster UI
+- **HTTP error** (4xx/5xx): `raise_for_status()` → sensor tick fails → automatic retry on next tick
+- **Cursor not updated on failure**: the hash only advances after a successful push, so the next tick retries the same payload
 
 ## Examples
 
