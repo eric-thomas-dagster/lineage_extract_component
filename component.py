@@ -104,15 +104,26 @@ def _hash_payload(payload: dict) -> str:
 # ═════════════════════════════════════════════════════════════════════
 
 def _transform_alation(payload: dict) -> dict:
-    """Transform to Alation Bulk Lineage API format.
+    """Transform to Alation Lineage API format.
 
-    Alation expects: { "dataflow_objects": [...], "paths": [[src, tgt], ...] }
-    Ref: https://developer.alation.com/dev/reference/postbulklineage
+    Endpoint: POST /integration/v2/lineage/
+    Auth header: TOKEN (not Bearer)
+
+    Alation lineage uses "paths" — ordered chains of objects where each
+    path is a list of segments. Each segment contains objects typed by
+    "otype" (table, dataflow, external, etc.) with a unique "key".
+
+    Dataflow objects represent processes (ETL jobs, dbt models, etc.)
+    that connect source → target. They must be registered via
+    "dataflow_objects" before being referenced in paths.
+
+    Ref: https://developer.alation.com/dev/docs/lineage-overview
     """
+    # Register each asset as an external dataflow object
     dataflow_objects = []
     for node in payload["nodes"]:
         dataflow_objects.append({
-            "external_id": f"dagster://{'/'.join(node['asset_key'])}",
+            "external_id": f"api/dagster/{'/'.join(node['asset_key'])}",
             "title": node["asset_key_string"],
             "description": node.get("description", ""),
             "content": json.dumps({
@@ -123,40 +134,86 @@ def _transform_alation(payload: dict) -> dict:
             }),
         })
 
+    # Build lineage paths: each edge becomes a 3-segment path
+    # [source_object] → [dataflow_object] → [target_object]
     paths = []
     for edge in payload["edges"]:
         paths.append([
-            f"dagster://{edge['upstream']}",
-            f"dagster://{edge['downstream']}",
+            [{"otype": "external", "key": f"api/dagster/{edge['upstream']}"}],
+            [{"otype": "dataflow", "key": f"api/dagster/{edge['downstream']}"}],
+            [{"otype": "external", "key": f"api/dagster/{edge['downstream']}"}],
         ])
 
     return {"dataflow_objects": dataflow_objects, "paths": paths}
 
 
 def _transform_collibra(payload: dict) -> list[dict]:
-    """Transform to Collibra Input/Output Relations API format.
+    """Transform to Collibra Import API format.
 
-    Collibra expects a list of relation objects:
-    [{ "sourceId": "...", "targetId": "...", "relationType": "..." }, ...]
-    Ref: https://developer.collibra.com/rest/2.0/input-output-relations
+    Endpoint: POST /rest/2.0/import/json-job
+    Auth: Basic auth or Bearer token via Authorization header
+
+    Collibra's import API accepts assets and relations in a single
+    payload. Assets are identified by name + domain. Relations connect
+    assets via typed relationships.
+
+    For lineage without pre-existing Collibra asset UUIDs, we use the
+    import API which can create-or-match assets by name.
     """
+    # Build asset entries
+    assets = []
+    for node in payload["nodes"]:
+        assets.append({
+            "identifier": {
+                "name": node["asset_key_string"],
+                "domain": {
+                    "name": node.get("group") or "Dagster",
+                    "community": {"name": "Data Platform"},
+                },
+            },
+            "resourceType": "Asset",
+            "type": {"name": "Data Asset"},
+            "displayName": node["asset_key_string"],
+            "attributes": {
+                "Description": [{"value": node.get("description", "")}],
+                "Dagster Group": [{"value": node.get("group", "")}],
+                "Dagster Kinds": [{"value": ",".join(node.get("kinds", []))}],
+                **({"Freshness Policy": [{"value": node["freshness_policy"]}]}
+                   if node.get("freshness_policy") else {}),
+            },
+        })
+
+    # Build relation entries
     relations = []
     for edge in payload["edges"]:
         relations.append({
-            "source": {"name": edge["upstream"], "domain": "Dagster"},
-            "target": {"name": edge["downstream"], "domain": "Dagster"},
-            "relationType": {"name": "Dagster Lineage"},
+            "source": {
+                "name": edge["upstream"],
+                "domain": {"name": "Data Platform"},
+            },
+            "target": {
+                "name": edge["downstream"],
+                "domain": {"name": "Data Platform"},
+            },
+            "type": {"name": "Data Flow"},
         })
-    return relations
+
+    return {"assets": assets, "relations": relations}
 
 
 def _transform_datahub(payload: dict) -> list[dict]:
-    """Transform to DataHub MCE (Metadata Change Event) format.
+    """Transform to DataHub Rest.li ingestProposal format.
 
-    DataHub expects dataset URNs and UpstreamLineage aspects.
-    Ref: https://datahubproject.io/docs/api/tutorials/lineage
+    Endpoint: POST /aspects?action=ingestProposal
+    Auth: Authorization: Bearer <personal_access_token>
+    Required header: X-RestLi-Protocol-Version: 2.0.0
+
+    Each proposal wraps an aspect value as a JSON string inside a
+    "proposal" object with entityUrn, entityType, aspectName,
+    changeType, and the aspect content.
+
+    Ref: https://docs.datahub.com/docs/api/restli/restli-overview
     """
-    # Build a parent lookup
     parent_map: dict[str, list[str]] = {}
     for edge in payload["edges"]:
         parent_map.setdefault(edge["downstream"], []).append(edge["upstream"])
@@ -167,38 +224,53 @@ def _transform_datahub(payload: dict) -> list[dict]:
         urn = f"urn:li:dataset:(urn:li:dataPlatform:dagster,{key_str},PROD)"
 
         # Dataset properties aspect
-        proposals.append({
-            "entityUrn": urn,
-            "entityType": "dataset",
-            "aspectName": "datasetProperties",
-            "aspect": {
-                "name": key_str,
-                "description": node.get("description", ""),
-                "customProperties": {
-                    "dagster_group": node["group"] or "",
-                    "dagster_kinds": ",".join(node["kinds"]),
-                    **({"freshness_policy": node["freshness_policy"]} if node["freshness_policy"] else {}),
-                    **{k: str(v) for k, v in node.get("metadata", {}).items()},
-                },
+        properties_aspect = {
+            "name": key_str,
+            "description": node.get("description", ""),
+            "customProperties": {
+                "dagster_group": node["group"] or "",
+                "dagster_kinds": ",".join(node["kinds"]),
+                **({"freshness_policy": node["freshness_policy"]}
+                   if node["freshness_policy"] else {}),
+                **{k: str(v) for k, v in node.get("metadata", {}).items()},
             },
+        }
+        proposals.append({
+            "proposal": {
+                "entityUrn": urn,
+                "entityType": "dataset",
+                "aspectName": "datasetProperties",
+                "changeType": "UPSERT",
+                "aspect": {
+                    "value": json.dumps(properties_aspect),
+                    "contentType": "application/json",
+                },
+            }
         })
 
         # Upstream lineage aspect
         parents = parent_map.get(key_str, [])
         if parents:
+            lineage_aspect = {
+                "upstreams": [
+                    {
+                        "dataset": f"urn:li:dataset:(urn:li:dataPlatform:dagster,{p},PROD)",
+                        "type": "TRANSFORMED",
+                    }
+                    for p in parents
+                ],
+            }
             proposals.append({
-                "entityUrn": urn,
-                "entityType": "dataset",
-                "aspectName": "upstreamLineage",
-                "aspect": {
-                    "upstreams": [
-                        {
-                            "dataset": f"urn:li:dataset:(urn:li:dataPlatform:dagster,{p},PROD)",
-                            "type": "TRANSFORMED",
-                        }
-                        for p in parents
-                    ],
-                },
+                "proposal": {
+                    "entityUrn": urn,
+                    "entityType": "dataset",
+                    "aspectName": "upstreamLineage",
+                    "changeType": "UPSERT",
+                    "aspect": {
+                        "value": json.dumps(lineage_aspect),
+                        "contentType": "application/json",
+                    },
+                }
             })
 
     return proposals
@@ -207,42 +279,66 @@ def _transform_datahub(payload: dict) -> list[dict]:
 def _transform_openlineage(payload: dict) -> dict:
     """Transform to OpenLineage RunEvent format.
 
-    OpenLineage expects a RunEvent with job facets and I/O datasets.
-    Ref: https://openlineage.io/docs/spec/run-event
+    Endpoint: POST /api/v1/lineage
+    Auth: Authorization: Bearer <token> (optional, depends on backend)
+
+    OpenLineage requires _producer and _schemaURL on the event.
+    Each dataset is an InputDataset with namespace + name.
+    Lineage is implicit from the job's inputs/outputs.
+    runId must be a UUID.
+
+    Ref: https://openlineage.io/docs/spec/object-model
     """
-    datasets = []
+    import uuid
+
+    # Build input datasets from all assets
+    input_datasets = []
     for node in payload["nodes"]:
-        datasets.append({
+        facets = {
+            "dagster_metadata": {
+                "_producer": "https://github.com/dagster-io/dagster",
+                "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/DagsterMetadataFacet.json",
+                "group": node["group"],
+                "kinds": node["kinds"],
+                "freshness_policy": node["freshness_policy"],
+            },
+        }
+        # Add schema facet if metadata has fields
+        if node.get("metadata"):
+            facets["schema"] = {
+                "_producer": "https://github.com/dagster-io/dagster",
+                "_schemaURL": "https://openlineage.io/spec/facets/1-0-1/SchemaDatasetFacet.json",
+                "fields": [
+                    {"name": k, "type": str(type(v).__name__)}
+                    for k, v in node["metadata"].items()
+                ],
+            }
+
+        input_datasets.append({
             "namespace": "dagster",
             "name": node["asset_key_string"],
-            "facets": {
-                "schema": {
-                    "fields": [
-                        {"name": k, "type": str(type(v).__name__)}
-                        for k, v in node.get("metadata", {}).items()
-                    ],
-                },
-                "dagster_metadata": {
-                    "group": node["group"],
-                    "kinds": node["kinds"],
-                    "freshness_policy": node["freshness_policy"],
-                },
-            },
+            "facets": facets,
+            "inputFacets": {},
         })
 
     return {
+        "_producer": "https://github.com/dagster-io/dagster",
+        "_schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
         "eventType": "COMPLETE",
         "eventTime": payload["sync_metadata"]["synced_at"],
         "job": {
             "namespace": "dagster",
-            "name": "lineage_export",
+            "name": "dagster_lineage_sync",
+            "facets": {},
         },
-        "inputs": datasets,
+        "inputs": input_datasets,
         "outputs": [],
         "run": {
-            "runId": payload["sync_metadata"]["synced_at"],
+            "runId": str(uuid.uuid4()),
             "facets": {
                 "dagster_lineage": {
+                    "_producer": "https://github.com/dagster-io/dagster",
+                    "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/DagsterLineageFacet.json",
                     "edges": payload["edges"],
                     "total_nodes": payload["sync_metadata"]["total_nodes"],
                     "total_edges": payload["sync_metadata"]["total_edges"],
@@ -268,42 +364,95 @@ _TRANSFORMERS = {
 
 
 # ═════════════════════════════════════════════════════════════════════
-# Catalog push functions — one per target type
+# Catalog push functions — one per target type, with correct auth
 # ═════════════════════════════════════════════════════════════════════
 
-def _post_to_api(log, transformed_payload, url: str, token_env: str, endpoint_suffix: str = ""):
-    """Generic authenticated POST."""
-    import os, requests
-    token = os.environ.get(token_env) if token_env else None
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    elif token_env:
+def _get_token(token_env: str) -> str:
+    """Get API token from environment, raising if missing."""
+    import os
+    token = os.environ.get(token_env)
+    if not token:
         raise RuntimeError(f"Missing {token_env} environment variable")
-    full_url = f"{url}{endpoint_suffix}" if endpoint_suffix else url
-    resp = requests.post(full_url, json=transformed_payload, headers=headers, timeout=30)
-    resp.raise_for_status()
-    log.info(f"POST {full_url}: {resp.status_code}")
+    return token
 
 
 def _push_alation(log, transformed, base_url: str, token_env: str):
-    _post_to_api(log, transformed, base_url, token_env, "/lineage/bulk")
+    """POST to Alation. Auth: TOKEN header (not Bearer)."""
+    import requests
+    token = _get_token(token_env)
+    resp = requests.post(
+        f"{base_url}/integration/v2/lineage/",
+        json=transformed,
+        headers={"TOKEN": token, "Content-Type": "application/json"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    # Alation returns a job ID for async processing
+    log.info(f"Alation lineage job submitted: {resp.json()}")
 
 
 def _push_collibra(log, transformed, base_url: str, token_env: str):
-    _post_to_api(log, transformed, base_url, token_env, "/rest/2.0/inputOutputRelations/bulk")
+    """POST to Collibra. Auth: Bearer token via Authorization header."""
+    import requests
+    token = _get_token(token_env)
+    resp = requests.post(
+        f"{base_url}/rest/2.0/import/json-job",
+        json=transformed,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    log.info(f"Collibra import: {resp.status_code}")
 
 
 def _push_datahub(log, transformed, base_url: str, token_env: str):
-    _post_to_api(log, transformed, base_url, token_env, "/aspects?action=ingestProposal")
+    """POST each proposal to DataHub. Auth: Bearer + X-RestLi-Protocol-Version."""
+    import requests
+    token = _get_token(token_env)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-RestLi-Protocol-Version": "2.0.0",
+    }
+    # DataHub ingestProposal accepts one proposal at a time
+    for i, proposal in enumerate(transformed):
+        resp = requests.post(
+            f"{base_url}/aspects?action=ingestProposal",
+            json=proposal,
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+    log.info(f"DataHub: ingested {len(transformed)} aspect proposals")
 
 
 def _push_openlineage(log, transformed, base_url: str, token_env: str):
-    _post_to_api(log, transformed, base_url, token_env, "/api/v1/lineage")
+    """POST to OpenLineage. Auth: Bearer token (optional for some backends)."""
+    import os, requests
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get(token_env) if token_env else None
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    resp = requests.post(
+        f"{base_url}/api/v1/lineage",
+        json=transformed,
+        headers=headers,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    log.info(f"OpenLineage: {resp.status_code}")
 
 
 def _push_webhook(log, transformed, base_url: str, token_env: str):
-    _post_to_api(log, transformed, base_url, token_env)
+    """POST to any URL. Auth: Bearer token if token_env is set."""
+    import os, requests
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get(token_env) if token_env else None
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    resp = requests.post(base_url, json=transformed, headers=headers, timeout=30)
+    resp.raise_for_status()
+    log.info(f"Webhook: {resp.status_code}")
 
 
 def _push_file(log, transformed, base_url: str, **_):
